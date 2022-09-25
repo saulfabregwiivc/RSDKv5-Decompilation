@@ -6,7 +6,9 @@
 
 #define STB_VORBIS_NO_PUSHDATA_API
 #define STB_VORBIS_NO_STDIO
+#if RETRO_PLATFORM != RETRO_WII // Wii needs s16 conversion from stb_vorbis
 #define STB_VORBIS_NO_INTEGER_CONVERSION
+#endif
 #include "stb_vorbis/stb_vorbis.c"
 
 stb_vorbis *vorbisInfo = NULL;
@@ -42,7 +44,7 @@ uint8 AudioDeviceBase::audioState               = 0;
 uint8 AudioDeviceBase::audioFocus               = 0;
 
 int32 AudioDeviceBase::mixBufferID = 0;
-float AudioDeviceBase::mixBuffer[3][MIX_BUFFER_SIZE];
+SAMPLE_FORMAT AudioDeviceBase::mixBuffer[3][MIX_BUFFER_SIZE];
 
 void AudioDeviceBase::ProcessAudioMixing(void *stream, int32 length)
 {
@@ -148,10 +150,14 @@ void AudioDeviceBase::ProcessAudioMixing(void *stream, int32 length)
 void RSDK::UpdateStreamBuffer(ChannelInfo *channel)
 {
     int32 bufferRemaining = 0x800;
-    float *buffer         = channel->samplePtr;
+    SAMPLE_FORMAT *buffer = channel->samplePtr;
 
     for (int32 s = 0; s < 0x800;) {
+#if RETRO_PLATFORM == RETRO_WII
+        int32 samples = stb_vorbis_get_samples_short_interleaved(vorbisInfo, 2, buffer, bufferRemaining) * 2;
+#else
         int32 samples = stb_vorbis_get_samples_float_interleaved(vorbisInfo, 2, buffer, bufferRemaining) * 2;
+#endif
         if (!samples) {
             if (channel->loop == 1 && stb_vorbis_seek_frame(vorbisInfo, streamLoopPoint)) {
                 // we're looping & the seek was successful, get more samples
@@ -159,7 +165,7 @@ void RSDK::UpdateStreamBuffer(ChannelInfo *channel)
             else {
                 channel->state   = CHANNEL_IDLE;
                 channel->soundID = -1;
-                memset(buffer, 0, sizeof(float) * bufferRemaining);
+                memset(buffer, 0, sizeof(SAMPLE_FORMAT) * bufferRemaining);
 
                 break;
             }
@@ -171,7 +177,7 @@ void RSDK::UpdateStreamBuffer(ChannelInfo *channel)
     }
 
     for (int32 i = 0; i < 0x800; i += 4) {
-        float *sampleBuffer = &channel->samplePtr[i];
+        SAMPLE_FORMAT *sampleBuffer = &channel->samplePtr[i];
 
         sampleBuffer[0] = sampleBuffer[0] * 0.5;
         sampleBuffer[1] = sampleBuffer[1] * 0.5;
@@ -182,9 +188,6 @@ void RSDK::UpdateStreamBuffer(ChannelInfo *channel)
 
 void RSDK::LoadStream(ChannelInfo *channel)
 {
-#if RETRO_PLATFORM == RETRO_WII // FIXME
-    return;
-#endif
     if (channel->state != CHANNEL_LOADING_STREAM)
         return;
 
@@ -282,9 +285,6 @@ int32 RSDK::PlayStream(const char *filename, uint32 slot, int32 startPos, uint32
 
 void RSDK::LoadSfxToSlot(char *filename, uint8 slot, uint8 plays, uint8 scope)
 {
-#if RETRO_PLATFORM == RETRO_WII // FIXME
-    return;
-#endif
     FileInfo info;
     InitFileInfo(&info);
 
@@ -356,23 +356,35 @@ void RSDK::LoadSfxToSlot(char *filename, uint8 slot, uint8 plays, uint8 scope)
                 if (sampleBits == 16)
                     length /= 2;
 
-                AllocateStorage((void **)&sfxList[slot].buffer, sizeof(float) * length, DATASET_SFX, false);
+                AllocateStorage((void **)&sfxList[slot].buffer, sizeof(SAMPLE_FORMAT) * length, DATASET_SFX, false);
                 sfxList[slot].length = length;
 
-                // Convert the sample data to F32 format
-                float *buffer = (float *)sfxList[slot].buffer;
+                // Convert the sample data to SAMPLE_FORMAT
+                SAMPLE_FORMAT *buffer = (SAMPLE_FORMAT *)sfxList[slot].buffer;
                 if (sampleBits == 8) {
                     for (int32 s = 0; s < length; ++s) {
+#if RETRO_PLATFORM == RETRO_WII
+                        int16 sample = (int16) ReadInt8(&info);
+                        *buffer++ = (int16) (sample << 8) - 32768;
+#else
                         int32 sample = ReadInt8(&info);
                         *buffer++    = (sample - 128) * 0.0078125; // 0.0078125 == 128.0
+#endif
                     }
                 }
                 else {
                     for (int32 s = 0; s < length; ++s) {
+#if RETRO_PLATFORM == RETRO_WII
+                        int16 sample = ReadInt16(&info);
+                        if (sample > 0x7FFF)
+                            sample = (sample & 0x7FFF) - 0x8000;
+                        *buffer++ = (int16) (sample * 0.75);
+#else
                         int32 sample = ReadInt16(&info);
                         if (sample > 0x7FFF)
                             sample = (sample & 0x7FFF) - 0x8000;
                         *buffer++ = (sample * 0.000030518) * 0.75; // 0.000030518 == 32,767.5
+#endif
                     }
                 }
             }
